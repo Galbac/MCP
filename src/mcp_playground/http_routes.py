@@ -4,13 +4,24 @@ from starlette.responses import JSONResponse, Response
 from src.mcp_playground.config import Settings
 from src.mcp_playground.services.clock import ClockService
 from src.mcp_playground.services.file_service import FileService, UnsafePathError
+from src.mcp_playground.services.llm_service import (
+    EmptyPromptError,
+    LlmService,
+    MissingAPIKeyError,
+    ProviderRequestError,
+)
 
 
 def _json_error(status_code: int, detail: str) -> JSONResponse:
     return JSONResponse({"error": detail}, status_code=status_code)
 
 
-def register_http_routes(mcp, settings: Settings, file_service: FileService) -> None:
+def register_http_routes(
+    mcp,
+    settings: Settings,
+    file_service: FileService,
+    llm_service: LlmService,
+) -> None:
     @mcp.custom_route("/health", methods=["GET"])
     async def health(_: Request) -> Response:
         return JSONResponse(
@@ -79,5 +90,32 @@ def register_http_routes(mcp, settings: Settings, file_service: FileService) -> 
                 "name": settings.app_name,
                 "allowed_root": str(settings.allowed_root.resolve()),
                 "notes_dir": str(settings.notes_dir.resolve()),
+            }
+        )
+
+    @mcp.custom_route("/api/llm", methods=["POST"])
+    async def ask_llm(request: Request) -> Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return _json_error(400, "Request body must be valid JSON")
+
+        prompt = payload.get("prompt") if isinstance(payload, dict) else None
+        if not isinstance(prompt, str):
+            return _json_error(400, "Field 'prompt' must be a string")
+
+        try:
+            result = llm_service.ask(prompt)
+        except EmptyPromptError as exc:
+            return _json_error(400, str(exc))
+        except MissingAPIKeyError as exc:
+            return _json_error(500, str(exc))
+        except ProviderRequestError as exc:
+            return _json_error(502, str(exc))
+
+        return JSONResponse(
+            {
+                "model": settings.openrouter_model,
+                "result": result,
             }
         )
